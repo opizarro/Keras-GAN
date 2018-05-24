@@ -26,13 +26,13 @@ import tensorflow as tf
 
 class AdversarialAutoencoder():
     def __init__(self):
-        self.img_rows = 32
-        self.img_cols = 32
+        self.img_rows = 64
+        self.img_cols = 64
         self.channels = 3
         self.img_shape = (self.img_rows, self.img_cols, self.channels)
         self.latent_dim = 256
 
-        optimizer = Adam(lr=1e-4, decay=1e-6)
+        optimizer = Adam(lr=2e-4, decay=1e-6)
 
         # Build and compile the discriminator
         #self.discriminator = self.build_discriminator()
@@ -115,7 +115,37 @@ class AdversarialAutoencoder():
 
         return Model(x, z, name="encoder")
 
+    def model_encoder_cats(self, units=512, reg=lambda: regularizers.l1_l2(l1=1e-7, l2=1e-7), dropout=0.5):
+        k = 5
+        x = Input(shape=self.img_shape)
+        h = Conv2D(units// 4, (k, k), padding='same', kernel_regularizer=reg())(x)
+        # h = SpatialDropout2D(dropout)(h)
+        h = MaxPooling2D(pool_size=(2, 2))(h)
+        #h = LeakyReLU(0.2)(h)
+        h = PReLU()(h)
+        h = Conv2D(units // 2, (k, k), padding='same', kernel_regularizer=reg())(h)
+        # h = SpatialDropout2D(dropout)(h)
+        h = MaxPooling2D(pool_size=(2, 2))(h)
+        #h = LeakyReLU(0.2)(h)
+        h = PReLU()(h)
+        h = Conv2D(units // 2, (k, k), padding='same', kernel_regularizer=reg())(h)
+        # h = SpatialDropout2D(dropout)(h)
+        h = MaxPooling2D(pool_size=(2, 2))(h)
+        #h = LeakyReLU(0.2)(h)
+        h = PReLU()(h)
+        h = Conv2D(units, (k, k), padding='same', kernel_regularizer=reg())(h)
+        # h = SpatialDropout2D(dropout)(h)
+        #h = LeakyReLU(0.2)(h)
+        h = PReLU()(h)
+        h = Flatten()(h)
+        mu = Dense(self.latent_dim, name="encoder_mu", kernel_regularizer=reg())(h)
+        log_sigma_sq = Dense(self.latent_dim, name="encoder_log_sigma_sq", kernel_regularizer=reg())(h)
+        # z = Lambda(lambda (_mu, _lss): _mu + K.random_normal(K.shape(_mu)) * K.exp(_lss / 2),output_shape=lambda (_mu, _lss): _mu)([mu, log_sigma_sq])
+        z = Lambda(lambda ml: ml[0] + K.random_normal(K.shape(ml[0])) * K.exp(ml[1] / 2),
+                   output_shape=lambda ml: ml[0])([mu, log_sigma_sq])
+        cat = Dense(self.num_cats)
 
+        return Model(x, [z,cat], name="encoder")
     def build_encoder(self):
         # Encoder
 
@@ -168,8 +198,9 @@ class AdversarialAutoencoder():
 
         # added another upsampling step to get to 64 x 64
         #decoder.add(LeakyReLU(0.2))
-        #decoder.add(UpSampling2D(size=(2, 2)))
-        #decoder.add(Conv2D(3, (h, h), padding='same', kernel_regularizer=reg()))
+        decoder.add(PReLU())
+        decoder.add(UpSampling2D(size=(2, 2)))
+        decoder.add(Conv2D(3, (h, h), padding='same', kernel_regularizer=reg()))
 
         decoder.add(Activation('sigmoid'))
 
