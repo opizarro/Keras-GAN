@@ -85,6 +85,7 @@ class CycleGAN():
         valid_A = self.d_A(fake_A)
         valid_B = self.d_B(fake_B)
 
+        # Combined model trains generators to fool discriminators
         self.combined = Model(inputs=[img_A, img_B],
                               outputs=[ valid_A, valid_B,
                                         reconstr_A, reconstr_B,
@@ -217,7 +218,7 @@ class CycleGAN():
                     self.sample_images(epoch, batch_i)
 
     def sample_images(self, epoch, batch_i):
-        os.makedirs('%s' % self.dataset_name, exist_ok=True)
+        os.makedirs('images/%s' % self.dataset_name, exist_ok=True)
         r, c = 2, 3
 
         imgs_A = self.data_loader.load_data(domain="A", batch_size=1, is_testing=True)

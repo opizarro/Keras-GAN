@@ -15,11 +15,12 @@ import matplotlib.pyplot as plt
 
 import numpy as np
 
-class SGAN():
+class SGAN:
     def __init__(self):
         self.img_rows = 28
         self.img_cols = 28
         self.channels = 1
+        self.img_shape = (self.img_rows, self.img_cols, self.channels)
         self.num_classes = 10
         self.latent_dim = 100
 
@@ -27,10 +28,12 @@ class SGAN():
 
         # Build and compile the discriminator
         self.discriminator = self.build_discriminator()
-        self.discriminator.compile(loss=['binary_crossentropy', 'categorical_crossentropy'],
+        self.discriminator.compile(
+            loss=['binary_crossentropy', 'categorical_crossentropy'],
             loss_weights=[0.5, 0.5],
             optimizer=optimizer,
-            metrics=['accuracy'])
+            metrics=['accuracy']
+        )
 
         # Build the generator
         self.generator = self.build_generator()
@@ -45,12 +48,10 @@ class SGAN():
         # The valid takes generated images as input and determines validity
         valid, _ = self.discriminator(img)
 
-        # The combined model  (stacked generator and discriminator) takes
-        # noise as input => generates images => determines validity
-        self.combined = Model(noise , valid)
-        self.combined.compile(loss=['binary_crossentropy'],
-            optimizer=optimizer)
-
+        # The combined model  (stacked generator and discriminator)
+        # Trains generator to fool discriminator
+        self.combined = Model(noise, valid)
+        self.combined.compile(loss=['binary_crossentropy'], optimizer=optimizer)
 
     def build_generator(self):
 
@@ -96,8 +97,8 @@ class SGAN():
         model.add(Conv2D(256, kernel_size=3, strides=1, padding="same"))
         model.add(LeakyReLU(alpha=0.2))
         model.add(Dropout(0.25))
-
         model.add(Flatten())
+
         model.summary()
 
         img = Input(shape=self.img_shape)
@@ -118,17 +119,18 @@ class SGAN():
         X_train = np.expand_dims(X_train, axis=3)
         y_train = y_train.reshape(-1, 1)
 
-        half_batch = int(batch_size / 2)
-
-        noise_until = epochs
-
         # Class weights:
         # To balance the difference in occurences of digit class labels.
         # 50% of labels that the discriminator trains on are 'fake'.
         # Weight = 1 / frequency
+        half_batch = batch_size // 2
         cw1 = {0: 1, 1: 1}
         cw2 = {i: self.num_classes / half_batch for i in range(self.num_classes)}
         cw2[self.num_classes] = 1 / half_batch
+
+        # Adversarial ground truths
+        valid = np.ones((batch_size, 1))
+        fake = np.zeros((batch_size, 1))
 
         for epoch in range(epochs):
 
@@ -136,19 +138,17 @@ class SGAN():
             #  Train Discriminator
             # ---------------------
 
-            # Select a random half batch of images
-            idx = np.random.randint(0, X_train.shape[0], half_batch)
+            # Select a random batch of images
+            idx = np.random.randint(0, X_train.shape[0], batch_size)
             imgs = X_train[idx]
 
-            # Sample noise and generate a half batch of new images
-            noise = np.random.normal(0, 1, (half_batch, self.latent_dim))
+            # Sample noise and generate a batch of new images
+            noise = np.random.normal(0, 1, (batch_size, self.latent_dim))
             gen_imgs = self.generator.predict(noise)
 
-            valid = np.ones((half_batch, 1))
-            fake = np.zeros((half_batch, 1))
-
+            # One-hot encoding of labels
             labels = to_categorical(y_train[idx], num_classes=self.num_classes+1)
-            fake_labels = to_categorical(np.full((half_batch, 1), self.num_classes), num_classes=self.num_classes+1)
+            fake_labels = to_categorical(np.full((batch_size, 1), self.num_classes), num_classes=self.num_classes+1)
 
             # Train the discriminator
             d_loss_real = self.discriminator.train_on_batch(imgs, [valid, labels], class_weight=[cw1, cw2])
@@ -160,11 +160,7 @@ class SGAN():
             #  Train Generator
             # ---------------------
 
-            noise = np.random.normal(0, 1, (batch_size, self.latent_dim))
-            validity = np.ones((batch_size, 1))
-
-            # Train the generator
-            g_loss = self.combined.train_on_batch(noise, validity, class_weight=[cw1, cw2])
+            g_loss = self.combined.train_on_batch(noise, valid, class_weight=[cw1, cw2])
 
             # Plot the progress
             print ("%d [D loss: %f, acc: %.2f%%, op_acc: %.2f%%] [G loss: %f]" % (epoch, d_loss[0], 100*d_loss[3], 100*d_loss[4], g_loss))
@@ -210,3 +206,4 @@ class SGAN():
 if __name__ == '__main__':
     sgan = SGAN()
     sgan.train(epochs=20000, batch_size=32, sample_interval=50)
+

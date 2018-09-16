@@ -57,7 +57,7 @@ class WGANGP():
         real_img = Input(shape=self.img_shape)
 
         # Noise input
-        z_disc = Input(shape=(100,))
+        z_disc = Input(shape=(self.latent_dim,))
         # Generate image based of noise (fake sample)
         fake_img = self.generator(z_disc)
 
@@ -212,9 +212,6 @@ class WGANGP():
             #  Train Generator
             # ---------------------
 
-            # Sample generator input
-            noise = np.random.normal(0, 1, (batch_size, self.latent_dim))
-            # Train the generator
             g_loss = self.generator_model.train_on_batch(noise, valid)
 
             # Plot the progress
