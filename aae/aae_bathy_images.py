@@ -2,8 +2,8 @@ from __future__ import print_function, division
 
 from keras.datasets import mnist
 from keras.layers import Input, Dense, Reshape, Flatten, Dropout, multiply, GaussianNoise
-from keras.layers import BatchNormalization, Activation, Embedding, ZeroPadding2D
-from keras.layers import MaxPooling2D, merge
+from keras.layers import BatchNormalization, Activation, Embedding, ZeroPadding2D, Cropping2D
+from keras.layers import Concatenate, MaxPooling2D, merge
 from keras.layers.advanced_activations import LeakyReLU, PReLU
 from keras.layers.convolutional import UpSampling2D, Conv2D
 from keras.models import Sequential, Model
@@ -20,7 +20,7 @@ import numpy as np
 # added by OP
 from keras.layers import Lambda
 from keras import regularizers
-from benthic_utils import benthoz_data
+from benthic_utils import bathy_data, benthic_img_data
 from keras.utils import multi_gpu_model
 import tensorflow as tf
 
@@ -34,7 +34,8 @@ class AdversarialAutoencoder():
 
         self.bathy_rows = 21
         self.bathy_cols = 21
-        self.bathy_shape = (self.bathy_rows,self.bathy_cols)
+        self.bathy_channels = 1
+        self.bathy_shape = (self.bathy_rows,self.bathy_cols, self.bathy_channels)
 
         optimizer = Adam(lr=2e-4, decay=1e-6)
 
@@ -65,7 +66,7 @@ class AdversarialAutoencoder():
 
         # The generator takes the image, encodes it and reconstructs it
         # from the encoding
-        encoded_repr = self.encoder(img)
+        encoded_repr = self.encoder([img,bpatch])
         reconstructed_img = self.decoder(encoded_repr)
         reconstructed_bathy = self.decoder_bathy(encoded_repr)
 
@@ -76,7 +77,7 @@ class AdversarialAutoencoder():
         self.discriminator.trainable = False
         # The adversarial_autoencoder model  (stacked generator and discriminator)
         with tf.device('/gpu:0'):
-            self.adversarial_autoencoder = Model(img, [reconstructed_img, validity])
+            self.adversarial_autoencoder = Model([img, bpatch], [reconstructed_img, reconstructed_bathy, validity])
 
         # try using multi_gpu
         #try:
@@ -86,8 +87,8 @@ class AdversarialAutoencoder():
         #    print("Training autoencoder on singe GPU or CPU")
 
 
-        self.adversarial_autoencoder.compile(loss=['mse', 'binary_crossentropy'],
-            loss_weights=[1e3, 1e-1],
+        self.adversarial_autoencoder.compile(loss=['mse', 'mse', 'binary_crossentropy'],
+            loss_weights=[1e3, 1e3, 1e-1],
             optimizer=optimizer)
 
 
@@ -116,8 +117,8 @@ class AdversarialAutoencoder():
         h = Flatten()(h)
 
         x2 = Input(shape=self.bathy_shape)
-        x = ZeroPadding2D((6,5,6,5))(x2) # from 21x21 to 32 x 32
-        h2 = Conv2D(units// 4, (k, k), padding='same', kernel_regularizer=reg())(x2)
+        h2 = ZeroPadding2D(padding=((6,5),(6,5)))(x2) # from 21x21 to 32 x 32
+        h2 = Conv2D(units// 4, (k, k), padding='same', kernel_regularizer=reg())(h2)
         # h = SpatialDropout2D(dropout)(h)
         h2 = MaxPooling2D(pool_size=(2, 2))(h2) # 16 x 16
         #h = LeakyReLU(0.2)(h)
@@ -141,7 +142,7 @@ class AdversarialAutoencoder():
         hcomb = Concatenate()([h, h2])
 
         mu = Dense(self.latent_dim, name="encoder_mu", kernel_regularizer=reg())(hcomb)
-        log_sigma_sq = Dense(self.latent_dim, name="encoder_log_sigma_sq", kernel_regularizer=reg())(h)
+        log_sigma_sq = Dense(self.latent_dim, name="encoder_log_sigma_sq", kernel_regularizer=reg())(hcomb)
         # z = Lambda(lambda (_mu, _lss): _mu + K.random_normal(K.shape(_mu)) * K.exp(_lss / 2),output_shape=lambda (_mu, _lss): _mu)([mu, log_sigma_sq])
         z = Lambda(lambda ml: ml[0] + K.random_normal(K.shape(ml[0])) * K.exp(ml[1] / 2),
                    output_shape=lambda ml: ml[0])([mu, log_sigma_sq])
@@ -201,7 +202,7 @@ class AdversarialAutoencoder():
         return Model(z, img)
 
 
-def model_generator_bathy(self, units=512, dropout=0.5, reg=lambda: regularizers.l1_l2(l1=1e-7, l2=1e-7)):
+    def model_generator_bathy(self, units=512, dropout=0.5, reg=lambda: regularizers.l1_l2(l1=1e-7, l2=1e-7)):
         decoder = Sequential(name="decoder")
         h = 5
 
@@ -232,7 +233,7 @@ def model_generator_bathy(self, units=512, dropout=0.5, reg=lambda: regularizers
         decoder.add(Activation('sigmoid'))
 
         # hack to bring back to size of bathymetry 21x21
-        decoder.add(Cropping2D((6,5)(6,5))
+        decoder.add(Cropping2D(cropping=((6,5),(6,5))))
 
 
         #decoder.summary()
@@ -274,7 +275,7 @@ def model_generator_bathy(self, units=512, dropout=0.5, reg=lambda: regularizers
         # Load the dataset
         #(X_train, _), (_, _) = mnist.load_data()
 
-        (Ximg_train,_) = benthic_img_dat()
+        (Ximg_train,_) = benthic_img_data()
         (Xbathy_train,_) = bathy_data()
 
         print("shape Ximg_train {}".format(Ximg_train.shape))
@@ -301,7 +302,7 @@ def model_generator_bathy(self, units=512, dropout=0.5, reg=lambda: regularizers
             imgs = Ximg_train[idx]
             bpatchs = Xbathy_train[idx]
             #print("shape imgs {}".format(imgs.shape))
-            latent_fake = self.encoder.predict(imgs)
+            latent_fake = self.encoder.predict([imgs,bpatchs])
             latent_real = np.random.normal(size=(desc_batch, self.latent_dim))
 
             # Train the discriminator
@@ -315,11 +316,11 @@ def model_generator_bathy(self, units=512, dropout=0.5, reg=lambda: regularizers
             # ---------------------
 
             # Select a random batch of images
-            idx = np.random.randint(0, X_train.shape[0], batch_size)
-            imgs = X_train[idx]
-
+            idx = np.random.randint(0, Ximg_train.shape[0], batch_size)
+            imgs = Ximg_train[idx]
+            bpatchs = Xbathy_train[idx]
             # Train the generator
-            g_loss = self.adversarial_autoencoder.train_on_batch(imgs, [imgs, np.ones((batch_size, 1))])
+            g_loss = self.adversarial_autoencoder.train_on_batch([imgs, bpatchs], [imgs, bpatchs, np.ones((batch_size, 1))])
 
             # Plot the progress
             print ("%d [D loss: %f, acc: %.2f%%] [G loss: %f, mse: %f]" % (epoch, d_loss[0], 100*d_loss[1], g_loss[0], g_loss[1]))
@@ -327,45 +328,54 @@ def model_generator_bathy(self, units=512, dropout=0.5, reg=lambda: regularizers
             # If at save interval => save generated image samples
             if epoch % sample_interval == 0:
                 self.sample_images(epoch)
-                self.sample_autoencoder(epoch, imgs)
+                self.sample_autoencoder(epoch, imgs, bpatchs)
 
     def sample_images(self, epoch):
-        r, c = 5, 5
+        r, c = 4, 5
 
         z = np.random.normal(size=(r*c, self.latent_dim))
         gen_imgs = self.decoder.predict(z)
+        gen_bpatchs = self.decoder_bathy.predict(z)
+        #print("shape gen imgs {}".format(gen_imgs.shape))
+        #print("shape gen bpatch {}".format(gen_bpatchs.shape))
         # where does this come from?
         #gen_imgs = 0.5 * gen_imgs + 0.5
 
-        fig, axs = plt.subplots(r, c)
+        fig, axs = plt.subplots(r, 2*c)
         cnt = 0
         for i in range(r):
             for j in range(c):
-                axs[i,j].imshow(gen_imgs[cnt])
-                axs[i,j].axis('off')
+                axs[i,2*j].imshow(gen_imgs[cnt])
+                axs[i,2*j].axis('off')
+                axs[i,2*j+1].imshow(gen_bpatchs[cnt,:,:,0])
+                axs[i,2*j+1].axis('off')
                 cnt += 1
         fig.savefig("images_generator/benthic_%d.png" % epoch)
         plt.close()
 
-    def sample_autoencoder(self, epoch,imgs):
-        r, c = 5, 2
+    def sample_autoencoder(self, epoch,imgs, bpatchs):
+        r, c = 4, 2
         namps = r*c
 
         # Select a random set of images
         #idx = np.random.randint(0, X_train.shape[0], nsamps)
         #imgs = X_train[idx]
-        gen_imgs, valids = self.adversarial_autoencoder.predict(imgs)
+        gen_imgs, gen_bpatchs, valids = self.adversarial_autoencoder.predict([imgs,bpatchs])
 
         #gen_imgs = 0.5 * gen_imgs + 0.5
 
-        fig, axs = plt.subplots(r, c*2)
+        fig, axs = plt.subplots(r*2, c*2)
         cnt = 0
         for i in range(r):
             for j in range(c):
-                axs[i,2*j].imshow(imgs[cnt])
-                axs[i,2*j].axis('off')
-                axs[i,2*j+1].imshow(gen_imgs[cnt])
-                axs[i,2*j+1].axis('off')
+                axs[2*i,2*j].imshow(imgs[cnt])
+                axs[2*i,2*j].axis('off')
+                axs[2*i,2*j+1].imshow(gen_imgs[cnt])
+                axs[2*i,2*j+1].axis('off')
+                axs[2*i+1,2*j].imshow(bpatchs[cnt,:,:,0])
+                axs[2*i+1,2*j].axis('off')
+                axs[2*i+1,2*j+1].imshow(gen_bpatchs[cnt,:,:,0])
+                axs[2*i+1,2*j+1].axis('off')
                 cnt += 1
         fig.savefig("images_autoenc/benthic_%d.png" % epoch)
         plt.close()
