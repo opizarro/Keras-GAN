@@ -7,7 +7,8 @@ from keras.layers.advanced_activations import LeakyReLU
 from keras.layers.convolutional import UpSampling2D, Conv2D
 from keras.models import Sequential, Model
 from keras.optimizers import Adam
-
+import matplotlib as mpl
+mpl.use('Agg') # does use DISPLAY
 import matplotlib.pyplot as plt
 
 import numpy as np
