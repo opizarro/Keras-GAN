@@ -71,6 +71,11 @@ class BiDNN():
         encoded_BA = self.encoderBA(modB)
         reconstructed_modA = self.decoderBA(encoded_BA)
 
+		# linker network
+		#diff = merge([a, b], mode=lambda (x, y): x - y, output_shape=(3,))
+		#diff_model = Model(input=[a, b], output=diff)
+		#print(diff_model.predict([input_a, input_b]))
+
 
         # The adversarial_autoencoder model  (stacked generator and discriminator)
         with tf.device('/gpu:0'):
