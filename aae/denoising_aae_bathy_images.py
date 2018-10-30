@@ -361,6 +361,18 @@ class AdversarialAutoencoder():
                 self.sample_autoencoder(epoch, imgs, bpatchs,"images_dautoenc_clean")
                 self.sample_autoencoder(epoch, imgs_corrupt,bpatchs,"images_dautoenc_noisy")
 
+    def sample_metrics(d_loss_hist, g_loss_hist):
+        # plotting the metrics
+        plt.plot(d_loss_hist,linewidth=0.5)
+        plt.plot(g_loss_hist,linewidth=0.5)
+        plt.title('Model loss')
+        plt.ylabel('Loss')
+        plt.xlabel('Epoch')
+        plt.legend(['Dloss', 'Dacc','AEloss','AEmse'], loc='center right')
+        plt.show()
+        plt.savefig("metrics_aae_bathy/aae_bathy_metrics.png")
+        plt.close()
+
     def sample_images(self, epoch):
         r, c = 4, 5
 

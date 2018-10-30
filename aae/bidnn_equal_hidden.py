@@ -3,6 +3,36 @@
 # load latent datasets
 
 # set up three layers and make them bidirectional
+
+from __future__ import print_function, division
+
+from keras.datasets import mnist
+from keras.layers import Input, Dense, Reshape, Flatten, Dropout, multiply, GaussianNoise
+from keras.layers import BatchNormalization, Activation, Embedding, ZeroPadding2D, Cropping2D
+from keras.layers import Concatenate, MaxPooling2D, merge
+from keras.layers.advanced_activations import LeakyReLU, PReLU
+from keras.layers.convolutional import UpSampling2D, Conv2D
+from keras.models import Sequential, Model
+from keras.optimizers import Adam
+from keras import losses
+from keras.utils import to_categorical
+import keras.backend as K
+
+import matplotlib as mpl
+mpl.use('Agg') # does use DISPLAY
+import matplotlib.pyplot as plt
+
+import numpy as np
+# added by OP
+from scipy.stats import bernoulli
+from keras.layers import Lambda
+from keras import regularizers
+from benthic_utils import bathy_data, benthic_img_data
+from keras.utils import multi_gpu_model
+import tensorflow as tf
+
+
+
 class DenseTranspose(Dense):
 	"""
 	A Keras dense layer that has its weights set to be the transpose of
@@ -58,6 +88,9 @@ class BiDNN():
 		self.encoderBA = self.model_encoderBA()
 		self.decoderBA = self.model_generatorBA()
 
+		self.encoderBA_shared = self.model_encoderBA_shared()
+		self.decoderBA_shared = self.model_generatorBA_shared()
+
 
         # inputs to encoder
         modA = Input(shape=self.modA_shape)
@@ -71,15 +104,18 @@ class BiDNN():
         encoded_BA = self.encoderBA(modB)
         reconstructed_modA = self.decoderBA(encoded_BA)
 
+		encoded_BA_shared = self.encoderBA_shared(modB,reconstructed_modB.get_layer("W_zB"))
+	    reconstructed_modA_shared = self.decoderBA_shared(encoded_AB,encoded_BA.get_layer("W_Az"))
+
 		# linker network
-		#diff = merge([a, b], mode=lambda (x, y): x - y, output_shape=(3,))
-		#diff_model = Model(input=[a, b], output=diff)
+		diff = merge([mod_AB, mod_BA], mode=lambda (x, y): x - y, output_shape=(3,))
+		diff_model = Model(input=[mod_AB, mod_BA], output=diff)
 		#print(diff_model.predict([input_a, input_b]))
 
 
         # The adversarial_autoencoder model  (stacked generator and discriminator)
         with tf.device('/gpu:0'):
-            self.multimodal_bidnn = Model([modA, modB], [reconstructed_modB, reconstructed_modA])
+            self.multimodal_bidnn = Model([modA, modB], [reconstructed_modB, reconstructed_modA, diff_model])
 
         # try using multi_gpu
         #try:
@@ -88,212 +124,191 @@ class BiDNN():
         #except:
         #    print("Training autoencoder on singe GPU or CPU")
 
-        self.multimodal_bidnn.compile(loss=['mse', 'mse'],
-            loss_weights=[1, 1],
+        self.multimodal_bidnn.compile(loss=['mse', 'mse', 'mse'],
+            loss_weights=[1, 1, 1],
             optimizer=optimizerA)
+
+
     #    print("Autoencoder metrics {}".format(self.adversarial_autoencoder.metrics_names))
-def model_encoderAB(self, output_dim=self.latent_dim, reg=lambda: regularizers.l1_l2(1e-7, 1e-7)):
-	modA = Input(shape=(self.modA_dim,))
-	h = modA
-	zAB = Dense(output_dim, name="W_Az", activation="sigmoid", kernel_regularizer=reg())(h)
-	return Model(modA, zAB)
+	def model_encoderAB(self, output_dim=self.latent_dim, reg=lambda: regularizers.l1_l2(1e-7, 1e-7)):
+		modA = Input(shape=(self.modA_dim,))
+		h = modA
+		zAB = Dense(output_dim, name="W_Az", activation="sigmoid", kernel_regularizer=reg())(h)
+		return Model(modA, zAB)
 
-def model_decoderAB(self, output_dim=self.modB_dim, reg=lambda: regularizers.l1_l2(1e-7, 1e-7)):
-	zAB = Input(shape=(self.latent_dim,))
-	h = zAB
-	recB = Dense(output_dim, name="W_zB", activation="sigmoid", kernel_regularizer=reg())(h)
-	return Model(zAB, recB)
+	def model_decoderAB(self, output_dim=self.modB_dim, reg=lambda: regularizers.l1_l2(1e-7, 1e-7)):
+		zAB = Input(shape=(self.latent_dim,))
+		h = zAB
+		recB = Dense(output_dim, name="W_zB", activation="sigmoid", kernel_regularizer=reg())(h)
+		return Model(zAB, recB)
 
-# going from modality B to A with tied weights
+	# going from modality B to A with tied weights
 
-def model_encoderBA(self, output_dim=self.latent_dim, reg=lambda: regularizers.l1_l2(1e-7, 1e-7)):
-	modB = Input(shape=(self.modB_dim,))
-	h = modB
-	zBA = TransponseDense(output_dim, name="W_Bz", activation="sigmoid", kernel_regularizer=reg())(h)
-	return Model(modB, zBA)
+	def model_encoderBA(self, output_dim=self.latent_dim, reg=lambda: regularizers.l1_l2(1e-7, 1e-7)):
+		modB = Input(shape=(self.modB_dim,))
+		h = modB
+		zBA = Dense(output_dim, name="W_Bz", activation="sigmoid", kernel_regularizer=reg())(h)
+		#zBA = TransponseDense(output_dim, name="W_Bz", activation="sigmoid", kernel_regularizer=reg())(h)
+		return Model(modB, zBA)
 
-def model_decoderBA(self, output_dim=self.modB_dim, reg=lambda: regularizers.l1_l2(1e-7, 1e-7)):
-	zBA = Input(shape=(self.latent_dim,))
-	h = zBA
-	recA = TransposeDense(output_dim, name="W_zA", activation="sigmoid", kernel_regularizer=reg())(h)
-	return Model(zBA, recA)
-
-
-def train(self, epochs, batch_size=128, sample_interval=50):
-
-	# Load the dataset
-	#(X_train, _), (_, _) = mnist.load_data()
+	def model_decoderBA(self, output_dim=self.modB_dim, reg=lambda: regularizers.l1_l2(1e-7, 1e-7)):
+		zBA = Input(shape=(self.latent_dim,))
+		h = zBA
+		recA = Dense(output_dim, name="W_zA", activation="sigmoid", kernel_regularizer=reg())(h)
+		#recA = TransposeDense(output_dim, name="W_zA", activation="sigmoid", kernel_regularizer=reg())(h)
+		return Model(zBA, recA)
 
 
-	(Xbathy_train,_) = bathy_data()
+	def model_encoderBA_shared(self, other_layer, output_dim=self.latent_dim, reg=lambda: regularizers.l1_l2(1e-7, 1e-7)):
+		modB = Input(shape=(self.modB_dim,))
+		h = modB
+		zBA = TransponseDense(other_layer, output_dim, name="W_Bz", activation="sigmoid", kernel_regularizer=reg())(h)
+		return Model(modB, zBA)
 
-
-	print("shape Xbathy_train {}".format(Xbathy_train.shape))
-
-
-	print(Xbathy_train.shape[0], 'train bathy samples')
-	# Rescale -1 to 1
-	#X_train = (X_train.astype(np.float32) - 127.5) / 127.5
-	#X_train = np.expand_dims(X_train, axis=3) # only used if image is 2D without channel info
-#HACK with 100 scale for mean depth
-	# remove mean from depth and use as separate input
-	Xbathy_train_means = 0.01*np.mean(Xbathy_train,axis=(1,2))
-	print("shape Xbathy_train_means ", Xbathy_train_means.shape)
-
-	for k in np.arange(Xbathy_train.shape[0]):
-		Xbathy_train[k,:,:,0] = Xbathy_train[k,:,:,0] - Xbathy_train_means[k]*100
-
-
-	#desc_batch = int(batch_size / 2)
-	desc_batch = int(batch_size)
-
-	#noise_frac = 0.05
-	#missing_prob = 0.5
-
-	# plotting metrics
-	d_loss_hist = []
-	g_loss_hist = []
-
-	for epoch in range(epochs):
-
-
-		# ---------------------
-		#  Train Discriminator
-		# ---------------------
-
-		# Select a random half batch of images
-		idx = np.random.randint(0, Xbathy_train.shape[0], desc_batch)
-
-		bpatchs = Xbathy_train[idx]
-		bpatchs_means = Xbathy_train_means[idx]
-
-		#print("shape imgs {}".format(imgs.shape))
-
-		latent_fake = self.encoder.predict([bpatchs,bpatchs_means])
-		latent_real = np.random.normal(size=(desc_batch, self.latent_dim))
-
-		# Train the discriminator
-
-
-		d_loss_real = self.discriminator.train_on_batch(latent_real, np.ones((desc_batch, 1)))
-		d_loss_fake = self.discriminator.train_on_batch(latent_fake, np.zeros((desc_batch, 1)))
-		d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
-
-
-		# ---------------------
-		#  Train Generator
-		# ---------------------
-
-		# Select a random batch of images
-		idx = np.random.randint(0, Xbathy_train.shape[0], batch_size)
-
-		bpatchs = Xbathy_train[idx]
-		bpatchs_means = Xbathy_train_means[idx]
-
-
-		# Train the generator
-
-		g_loss = self.adversarial_autoencoder.train_on_batch([bpatchs, bpatchs_means], [bpatchs, bpatchs_means, np.ones((batch_size, 1))])
-
-		# Plot the progress
-		print ("bathy %d [D loss: %f, acc: %.2f%%] [G loss: %f, mse: %f]" % (epoch, d_loss[0], 100*d_loss[1], g_loss[0], g_loss[1]))
-
-
-		d_loss_hist.append(d_loss)
-		g_loss_hist.append((g_loss[0],g_loss[1]))
-
-		# If at save interval => save generated image samples
-		if epoch % sample_interval == 0:
-			self.sample_images(epoch)
-			self.sample_autoencoder(epoch, bpatchs, bpatchs_means,"bathy_aae")
-
-				# plotting the metrics
-			plt.plot(d_loss_hist,linewidth=0.5)
-			plt.plot(g_loss_hist,linewidth=0.5)
-			plt.title('Model loss')
-			plt.ylabel('Loss')
-			plt.xlabel('Epoch')
-			plt.legend(['Dloss', 'Dacc','AEloss','AEmse'], loc='center right')
-			plt.show()
-			plt.savefig("metrics_aae_bathy/aae_bathy_metrics.png")
-			plt.close()
-	#save params once done training
-	self.save_model()
-	self.save_latentspace([Xbathy_train,Xbathy_train_means],"z_bathy")
-
-def sample_images(self, epoch):
-	r, c = 4, 5
-
-	z = np.random.normal(size=(r*c, self.latent_dim))
-
-	gen_bpatchs = self.decoder_bathy.predict(z)
-	gen_bpatchs_means = self.decoder_bathy_mean.predict(z)
-	#print("shape gen imgs {}".format(gen_imgs.shape))
-	#print("shape gen bpatch {}".format(gen_bpatchs.shape))
-	# where does this come from?
-	#gen_imgs = 0.5 * gen_imgs + 0.5
-
-	fig, axs = plt.subplots(r, c)
-	cnt = 0
-	for i in range(r):
-		for j in range(c):
-			axs[i,j].imshow(gen_bpatchs[cnt,:,:,0])
-			axs[i,j].set_title("d %.1f" % (100*gen_bpatchs_means[cnt]), color='black')
-			axs[i,j].axis('off')
-			cnt += 1
-	fig.savefig("bathy_aae_generator/benthic_%d.png" % epoch)
-	plt.close()
-
-def sample_autoencoder(self, epoch,bpatchs, bpatchs_means, save_folder):
-	r, c = 4, 2
-	namps = r*c
-
-	# Select a random set of images
-	#idx = np.random.randint(0, X_train.shape[0], nsamps)
-	#imgs = X_train[idx]
-	gen_bpatchs, gen_bpatchs_means, valids = self.adversarial_autoencoder.predict([bpatchs,bpatchs_means])
-
-	#gen_imgs = 0.5 * gen_imgs + 0.5
-
-	fig, axs = plt.subplots(r, c*2)
-	cnt = 0
-	for i in range(r):
-		for j in range(c):
-
-			axs[i,2*j].imshow(bpatchs[cnt,:,:,0])
-			axs[i,2*j].set_title("d %.1f" % (100*bpatchs_means[cnt]), color='black')
-			axs[i,2*j].axis('off')
-			axs[i,2*j+1].imshow(gen_bpatchs[cnt,:,:,0])
-			axs[i,2*j+1].set_title("d %.1f" % (100*gen_bpatchs_means[cnt]), color='black')
-			axs[i,2*j+1].axis('off')
-			cnt += 1
-	fig.savefig(save_folder+"/benthic_%d.png" % epoch)
-	plt.close()
+	def model_decoderBA_shared(self, other_layer, output_dim=self.modB_dim, reg=lambda: regularizers.l1_l2(1e-7, 1e-7)):
+		zBA = Input(shape=(self.latent_dim,))
+		h = zBA
+		recA = TransposeDense(other_layer, output_dim, name="W_zA", activation="sigmoid", kernel_regularizer=reg())(h)
+		return Model(zBA, recA)
 
 
 
-def save_model(self):
+	def train(self, epochs, batch_size=128, sample_interval=50):
 
-	def save(model, model_name):
-		model_path = "saved_model/%s.json" % model_name
-		weights_path = "saved_model/%s_weights.hdf5" % model_name
-		options = {"file_arch": model_path,
-					"file_weight": weights_path}
-		json_string = model.to_json()
-		open(options['file_arch'], 'w').write(json_string)
-		model.save_weights(options['file_weight'])
+		# Load the dataset
+		cached_bpatches_latent = '/data/bathy_training/cache_bpatches_ohara_07.npz'
+		cached_images_latent = '/data/bathy_training/cache_bpatches_ohara_07.npz'
 
-	save(self.adversarial_autoencoder, "bathy_aae")
-	save(self.encoder, "bathy_encoder")
-	save(self.decoder_bathy, "bathy_decoder")
-	save(self.decoder_bathy_mean, "bathy_decoder_mean")
-	save(self.discriminator, "bathy_aae_discriminator")
 
-def save_latentspace(self, inputdata, latent_name):
+		(Xbathy_train,_) = load_cached_training_npz(cached_bpatches_latent)
+		(Ximg_train,_) = load_cached_training_npz(cached_images_latent)
 
-	z = self.encoder.predict(inputdata)
-	np.save("saved_latent/%s.npy" % latent_name, z)
+    	print("shape Ximg_train {}".format(Ximg_train.shape))
+		print("shape Xbathy_train {}".format(Xbathy_train.shape))
+
+		print(Ximg_train.shape[0], 'train img samples')
+		print(Xbathy_train.shape[0], 'train bathy samples')
+
+		#desc_batch = int(batch_size / 2)
+		desc_batch = int(batch_size)
+
+		# plotting metrics
+		g_loss_hist = []
+
+		for epoch in range(epochs):
+
+			# ---------------------
+			#  Train Generator
+			# ---------------------
+
+			# Select a random batch of images
+			idx = np.random.randint(0, Xbathy_train.shape[0], batch_size)
+
+			bpatchs = Xbathy_train[idx]
+			imgs = Ximg_train[idx]
+
+			# Train the generator
+			g_loss = self.multimodal_bidnn.train_on_batch([imgs, bpatchs], [bpatchs, bpatchs_means, np.zeros((batch_size, 1))])
+
+			# Plot the progress
+			print ("bathy %d [G loss: %f, mseBI: %f, mseIB: %f, mseZ: %f]" % (epoch, g_loss[0], g_loss[1], g_loss[2]))
+
+			g_loss_hist.append((g_loss[0],g_loss[1],g_loss[2]))
+
+			# If at save interval => save generated image samples
+			if epoch % sample_interval == 0:
+				#self.sample_images(epoch)
+				#self.sample_autoencoder(epoch, bpatchs, bpatchs_means,"bathy_aae")
+				self.sample_metrics(g_loss_hist)
+
+		#save params once done training
+		#self.save_model()
+		#self.save_latentspace([Xbathy_train,Xbathy_train_means],"z_bathy")
+
+	def sample_metrics(g_loss_hist):
+		# plotting the metrics
+		plt.plot(g_loss_hist,linewidth=0.5)
+		plt.title('Model loss')
+		plt.ylabel('Loss')
+		plt.xlabel('Epoch')
+		plt.legend(['BI','IB','Zdelta'], loc='center right')
+		plt.show()
+		plt.savefig("metrics_bidnnl_bathy/aae_bathy_metrics.png")
+		plt.close()
+
+	def sample_images(self, epoch):
+		r, c = 4, 5
+
+		z = np.random.normal(size=(r*c, self.latent_dim))
+
+		gen_bpatchs = self.decoder_bathy.predict(z)
+		gen_bpatchs_means = self.decoder_bathy_mean.predict(z)
+		#print("shape gen imgs {}".format(gen_imgs.shape))
+		#print("shape gen bpatch {}".format(gen_bpatchs.shape))
+		# where does this come from?
+		#gen_imgs = 0.5 * gen_imgs + 0.5
+
+		fig, axs = plt.subplots(r, c)
+		cnt = 0
+		for i in range(r):
+			for j in range(c):
+				axs[i,j].imshow(gen_bpatchs[cnt,:,:,0])
+				axs[i,j].set_title("d %.1f" % (100*gen_bpatchs_means[cnt]), color='black')
+				axs[i,j].axis('off')
+				cnt += 1
+		fig.savefig("bathy_aae_generator/benthic_%d.png" % epoch)
+		plt.close()
+
+	def sample_autoencoder(self, epoch,bpatchs, bpatchs_means, save_folder):
+		r, c = 4, 2
+		namps = r*c
+
+		# Select a random set of images
+		#idx = np.random.randint(0, X_train.shape[0], nsamps)
+		#imgs = X_train[idx]
+		gen_bpatchs, gen_bpatchs_means, valids = self.adversarial_autoencoder.predict([bpatchs,bpatchs_means])
+
+		#gen_imgs = 0.5 * gen_imgs + 0.5
+
+		fig, axs = plt.subplots(r, c*2)
+		cnt = 0
+		for i in range(r):
+			for j in range(c):
+
+				axs[i,2*j].imshow(bpatchs[cnt,:,:,0])
+				axs[i,2*j].set_title("d %.1f" % (100*bpatchs_means[cnt]), color='black')
+				axs[i,2*j].axis('off')
+				axs[i,2*j+1].imshow(gen_bpatchs[cnt,:,:,0])
+				axs[i,2*j+1].set_title("d %.1f" % (100*gen_bpatchs_means[cnt]), color='black')
+				axs[i,2*j+1].axis('off')
+				cnt += 1
+		fig.savefig(save_folder+"/benthic_%d.png" % epoch)
+		plt.close()
+
+
+
+	def save_model(self):
+
+		def save(model, model_name):
+			model_path = "saved_model/%s.json" % model_name
+			weights_path = "saved_model/%s_weights.hdf5" % model_name
+			options = {"file_arch": model_path,
+						"file_weight": weights_path}
+			json_string = model.to_json()
+			open(options['file_arch'], 'w').write(json_string)
+			model.save_weights(options['file_weight'])
+
+		save(self.adversarial_autoencoder, "bathy_aae")
+		save(self.encoder, "bathy_encoder")
+		save(self.decoder_bathy, "bathy_decoder")
+		save(self.decoder_bathy_mean, "bathy_decoder_mean")
+		save(self.discriminator, "bathy_aae_discriminator")
+
+	def save_latentspace(self, inputdata, latent_name):
+
+		z = self.encoder.predict(inputdata)
+		np.save("saved_latent/%s.npy" % latent_name, z)
 
 if __name__ == '__main__':
-aae = AdversarialAutoencoder()
-aae.train(epochs=200000, batch_size=32, sample_interval=500)
+mmb = BiDNN()
+mmb.train(epochs=200000, batch_size=32, sample_interval=5000000)
