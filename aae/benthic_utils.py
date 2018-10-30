@@ -86,8 +86,17 @@ def bathy_data():
     return xtrain, xtest
 
 def benthic_img_data():
-    
+
     cached_images = '/data/bathy_training/cache_images_ohara_07.npz'
+    data =  np.load(cached_images)
+    xtrain = data['xtrain']
+    xtest = []
+
+    return xtrain, xtest
+
+
+def load_cached_training_npz(cached_location):
+    
     data =  np.load(cached_images)
     xtrain = data['xtrain']
     xtest = []
